@@ -38,6 +38,9 @@ class TimmAudioBackbone(nn.Module):
             self.backbone.set_gradient_checkpointing()
 
     def forward(self, x: Tensor) -> Tensor:
-        x = self.logmelspec(x).unsqueeze(-3)  # (B, 1, n_mels, n_frames)
+        x = self.logmelspec(x.float()).to(self.backbone.head.weight.dtype)
+        x = x.unsqueeze(-3)  # (B, 1, n_mels, n_frames)
+
+        # NOTE: since we use n_channels=1, x is both channels-last and channels-first contiguous.
         x = self.backbone(x)
         return x

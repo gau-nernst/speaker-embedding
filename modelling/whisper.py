@@ -109,10 +109,11 @@ class WhisperEncoder(nn.Module):
         self.register_buffer("pos_embed", sinusoids(int(16_000 * max_duration), d_model), persistent=False)
         self.blocks = nn.ModuleList(*[EncoderBlock(d_model, bias, mlp_ratio, dropout) for _ in range(n_layers)])
         self.ln_pos = nn.LayerNorm(d_model)
+        self.head = nn.Linear(d_model, out_dim)
         self.activation_checkpointing = activation_checkpointing
 
     def forward(self, x: Tensor) -> Tensor:
-        x = self.logmelspec(x)
+        x = self.logmelspec(x.float()).to(self.conv1.weight.dtype)
         x = F.gelu(self.conv1(x))
         x = F.gelu(self.conv2(x))
         x = x.permute(0, 2, 1)
@@ -123,4 +124,5 @@ class WhisperEncoder(nn.Module):
 
         x = self.ln_pos(x)
         x = x.mean(-2)  # mean pooling
+        x = self.head(x)
         return x
