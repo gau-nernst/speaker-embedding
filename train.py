@@ -10,13 +10,16 @@ from pathlib import Path
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+import numpy as np
 import timm.optim
 import torch
 import wandb
+from sklearn.metrics import roc_curve
 from torch import Tensor
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from data import build_train_dloader
+from data import Vox1OClean, build_train_dloader
 from modelling import SpeakerModel
 
 logger = logging.getLogger()
@@ -64,6 +67,39 @@ def build_optim(model: SpeakerModel, optim: str, lr: float, weight_decay: float,
     return optim_cls(model.parameters(), lr=lr, weight_decay=weight_decay, **kwargs)
 
 
+def eer_score(y_true: np.ndarray, y_score: np.ndarray):
+    fpr, tpr, thresholds = roc_curve(y_true, y_score)
+    fnr = 1 - tpr
+
+    eer_idx = np.argmin(np.abs((fpr - fnr)))
+    eer = (fpr[eer_idx] + fnr[eer_idx]) / 2
+    th = thresholds[eer_idx]
+    return dict(eer=eer, eer_th=th)
+
+
+@torch.no_grad()
+def evalute_model(model: SpeakerModel, vox1_test_dir: str, duration: float, batch_size: int, bf16_amp: bool = False):
+    model.eval()
+
+    ds = Vox1OClean(vox1_test_dir, duration=duration)
+    dloader = DataLoader(ds, batch_size, num_workers=4)
+
+    all_labels = []
+    all_scores = []
+
+    for labels, audio1, audio2 in tqdm(dloader, desc="Evaluate", dynamic_ncols=True):
+        all_labels.append(labels)
+        with torch.autocast("cuda", torch.bfloat16, enabled=bf16_amp):
+            embs1 = model(audio1)
+            embs2 = model(audio2)
+        all_scores.append((embs1.float() * embs2.float()).sum(-1))
+
+    all_labels = torch.stack(all_labels, dim=0).numpy()
+    all_scores = torch.stack(all_scores, dim=0).numpy()
+    metrics = eer_score(all_labels, all_scores)
+    return metrics
+
+
 def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--backbone", required=True)
@@ -82,9 +118,11 @@ def get_parser():
 
     parser.add_argument("--ds_path", required=True)
     parser.add_argument("--augmentations", nargs="+")
-    parser.add_argument("--val_ds", nargs="+", type=Path)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--n_workers", type=int, default=4)
+
+    parser.add_argument("--vox1_test_dir", required=True)
+    parser.add_argument("--test_duration", type=float, default=4.0)
 
     parser.add_argument("--optim", default="torch.optim.AdamW")
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -117,9 +155,11 @@ if __name__ == "__main__":
     CKPT_DIR.mkdir(parents=True, exist_ok=True)
     wandb.init(project="Speaker embedding", name=args.run_name, config=args, dir="/tmp")
 
+    batch_size = args.batch_size // args.grad_accum
     dloader, train_size = build_train_dloader(
         args.ds_path,
-        args.batch_size // args.grad_accum,
+        batch_size,
+        args.augmentations,
         n_workers=args.n_workers,
     )
     logger.info(f"Train dataset: {train_size:,} images")
@@ -213,4 +253,8 @@ if __name__ == "__main__":
             torch.save(checkpoint, CKPT_DIR / f"step_{step}.pth")
             checkpoint.update(optim=optim.state_dict())
             torch.save(checkpoint, CKPT_DIR / "last.pth")  # for resume, w/ optim states
+
+            metrics = evalute_model(model, args.vox1_test_dir, args.test_duration, batch_size, args.bf16_amp)
+            wandb.log(metrics, step=step)
+
             model.train()
