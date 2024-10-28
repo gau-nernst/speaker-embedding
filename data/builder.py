@@ -6,6 +6,15 @@ from . import transforms as T
 from .utils import AUDIO_EXTENSIONS, load_audio
 
 
+def cycle(dloader: DataLoader):
+    epoch_idx = 0
+    while True:
+        if hasattr(dloader.sampler, "set_epoch"):
+            dloader.sampler.set_epoch(epoch_idx)
+        yield from dloader
+        epoch_idx += 1
+
+
 def build_train_dloader(dataset: str, batch_size: int, augmentations: list[str], n_workers: int = 4, **kwargs):
     transform = nn.Sequential()
     for aug in augmentations:
@@ -38,4 +47,4 @@ def build_train_dloader(dataset: str, batch_size: int, augmentations: list[str],
         dloader = DataLoader(ds, batch_size, shuffle=True, num_workers=n_workers, pin_memory=True, drop_last=True)
         size = len(ds)
 
-    return dloader, size
+    return cycle(dloader), size

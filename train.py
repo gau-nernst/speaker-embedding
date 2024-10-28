@@ -87,15 +87,15 @@ def evalute_model(model: SpeakerModel, vox1_test_dir: str, duration: float, batc
     all_labels = []
     all_scores = []
 
-    for labels, audio1, audio2 in tqdm(dloader, desc="Evaluate", dynamic_ncols=True):
+    for audio1, audio2, labels in tqdm(dloader, desc="Evaluate", dynamic_ncols=True):
         all_labels.append(labels)
         with torch.autocast("cuda", torch.bfloat16, enabled=bf16_amp):
-            embs1 = model(audio1)
-            embs2 = model(audio2)
-        all_scores.append((embs1.float() * embs2.float()).sum(-1))
+            embs1 = model(audio1.cuda())
+            embs2 = model(audio2.cuda())
+        all_scores.append((embs1.float() * embs2.float()).sum(-1).cpu())
 
-    all_labels = torch.stack(all_labels, dim=0).numpy()
-    all_scores = torch.stack(all_scores, dim=0).numpy()
+    all_labels = torch.cat(all_labels, dim=0).numpy()
+    all_scores = torch.cat(all_scores, dim=0).numpy()
     metrics = eer_score(all_labels, all_scores)
     return metrics
 
@@ -104,7 +104,7 @@ def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--backbone", required=True)
     parser.add_argument("--backbone_kwargs", type=json.loads, default=dict())
-    parser.add_argument("--n_classes", type=int, default=6000)
+    parser.add_argument("--n_classes", type=int, default=5994)
     parser.add_argument("--embed_dim", type=int, default=256)
     parser.add_argument("--loss", default="cosface")
 
@@ -184,7 +184,7 @@ if __name__ == "__main__":
     logger.info(f"  Backbone: {sum(p.numel() for p in model.backbone.parameters()):,}")
     logger.info(f"  Head: {model.weight.numel():,}")
 
-    optim = build_optim(model, args.optim, args.lr, args.weight_decay, args.param_groups, **args.optim_kwargs)
+    optim = build_optim(model, args.optim, args.lr, args.weight_decay, **args.optim_kwargs)
     lr_schedule = CosineSchedule(args.lr, args.n_steps, warmup=args.warmup, decay_multiplier=args.decay_multiplier)
     step = 0
 
@@ -226,8 +226,8 @@ if __name__ == "__main__":
                 norm_mean=norms.mean(),
                 grad_norm=grad_norm.item(),
             )
-            for param_group in optim.param_groups:
-                log_dict[f"lr/{param_group['prefix']}"] = param_group["lr"]
+            for group_idx, param_group in enumerate(optim.param_groups):
+                log_dict[f"lr/{group_idx}"] = param_group["lr"]
             wandb.log(log_dict, step=step)
 
         optim.step()
@@ -239,8 +239,8 @@ if __name__ == "__main__":
             time1 = time.perf_counter()
             log_dict = dict(
                 max_memory_allocated=torch.cuda.max_memory_allocated(),
-                imgs_seen_millions=args.batch_size * step / 1e6,
-                imgs_per_second=args.batch_size * log_interval / (time1 - time0),
+                samples_seen_millions=args.batch_size * step / 1e6,
+                samples_per_second=args.batch_size * log_interval / (time1 - time0),
             )
             wandb.log(log_dict, step=step)
             time0 = time1

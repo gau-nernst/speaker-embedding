@@ -107,7 +107,7 @@ class WhisperEncoder(nn.Module):
         self.conv1 = nn.Conv1d(n_mels, d_model, 3, 1, 1)
         self.conv2 = nn.Conv1d(d_model, d_model, 3, 2, 1)
         self.register_buffer("pos_embed", sinusoids(int(16_000 * max_duration), d_model), persistent=False)
-        self.blocks = nn.ModuleList(*[EncoderBlock(d_model, bias, mlp_ratio, dropout) for _ in range(n_layers)])
+        self.blocks = nn.ModuleList([EncoderBlock(d_model, bias, mlp_ratio, dropout) for _ in range(n_layers)])
         self.ln_pos = nn.LayerNorm(d_model)
         self.head = nn.Linear(d_model, out_dim)
         self.activation_checkpointing = activation_checkpointing
@@ -116,8 +116,10 @@ class WhisperEncoder(nn.Module):
         x = self.logmelspec(x.float()).to(self.conv1.weight.dtype)
         x = F.gelu(self.conv1(x))
         x = F.gelu(self.conv2(x))
-        x = x.permute(0, 2, 1)
-        x = (x + self.pos_embed).type_as(x)  # pos_embed may have different dtype from x
+        x = x.permute(0, 2, 1)  # (B, D, L) -> (B, L, D)
+
+        # pos_embed may have different dtype from x
+        x = (x + self.pos_embed[: x.shape[1]]).type_as(x)
 
         for block in self.blocks:
             x = checkpoint(block, x, use_reentrant=False) if self.activation_checkpointing else block(x)

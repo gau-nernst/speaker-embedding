@@ -12,7 +12,7 @@ class SpeakerModel(nn.Module):
         backbone: str,
         backbone_kwargs: dict | None = None,
         embed_dim: int = 512,
-        n_classes: int = 6_000,
+        n_classes: int = 5994,
         loss: str = "cosface",
     ) -> None:
         super().__init__()
@@ -21,7 +21,7 @@ class SpeakerModel(nn.Module):
             self.backbone = WhisperEncoder(out_dim=embed_dim, **backbone_kwargs)
         else:
             self.backbone = TimmAudioBackbone(backbone, out_dim=embed_dim, **backbone_kwargs)
-        self.weight = nn.Parameter(torch.empty(embed_dim, n_classes))
+        self.weight = nn.Parameter(torch.empty(n_classes, embed_dim))
         nn.init.trunc_normal_(self.weight, 0, 0.02)
         self.loss = dict(
             cosface=CosFace,
